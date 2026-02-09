@@ -328,28 +328,28 @@ class Redesign(Extension):
         elif self.usesBorderlessToolbar:
             full_style_sheet += f"\n {variables.no_borders_style} \n"    
         
-        window.setStyleSheet(full_style_sheet)
+        # Prevent intermediate layout events
+        window.setUpdatesEnabled(False)
+        try:
+            window.setStyleSheet(full_style_sheet)
 
-        #print("\n\n")
-        #print(full_style_sheet)
-        #print("\n\n")
+            # Overview
+            overview = window.findChild(QWidget, 'OverviewDocker')
+            overview_style = ""
 
-        # Overview
-        overview = window.findChild(QWidget, 'OverviewDocker')
-        overview_style = ""
+            if self.usesFlatTheme:
+                overview_style += f"\n {variables.flat_overview_docker_style} \n"
 
-        if self.usesFlatTheme:
-            overview_style += f"\n {variables.flat_overview_docker_style} \n"
+            if overview:
+                overview.setStyleSheet(overview_style)
 
-        if overview:
-            overview.setStyleSheet(overview_style)
+            canvas = window.centralWidget()
 
-        canvas = window.centralWidget()
-        canvas.setStyleSheet("")
-
-        # This is ugly, but it's the least ugly way I can get the canvas to 
-        # update it's size (for now)
-        canvas.resize(canvas.sizeHint())
+            # This is ugly, but it's the least ugly way I can get the canvas to 
+            # update it's size (for now)
+            canvas.resize(canvas.sizeHint())
+        finally:
+            window.setUpdatesEnabled(True)
 
         # Update Tool Options stylesheet
         if self.usesNuToolOptions and self.ntTO:
