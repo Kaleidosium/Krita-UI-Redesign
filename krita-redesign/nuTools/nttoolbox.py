@@ -16,8 +16,8 @@
 """
 
 from PyQt6.QtCore import QSignalBlocker, QTimer, Qt
-from PyQt6.QtGui import QIcon, QPalette, QPixmap, QPainter, QColor
-from PyQt6.QtWidgets import QMdiArea, QDockWidget, QToolButton
+from PyQt6.QtGui import QIcon, QPalette, QPixmap, QPainter, QColor, QImage
+from PyQt6.QtWidgets import QMdiArea, QDockWidget, QToolButton, QApplication
 from .ntadjusttosubwindowfilter import ntAdjustToSubwindowFilter
 from .ntwidgetpad import ntWidgetPad
 from .. import variables
@@ -54,9 +54,6 @@ class ntToolBox():
         self.sourceDocker.visibilityChanged.connect(self._onDockerVisibilityChanged)
         self._ensureDockerHidden()
         self.dockerAction.setEnabled(False)
-        
-        # Track if we've completed initial icon setup (skip first recolor)
-        self._icons_initialized = False
 
     def ensureFilterIsInstalled(self, subWin):
         """Ensure that the current SubWindow has the filter installed,
@@ -118,70 +115,72 @@ class ntToolBox():
         self._refreshToolButtonIcons(palette_to_use)
 
     def _refreshToolButtonIcons(self, palette=None):
-        # Skip recoloring on initial setup - icons aren't fully loaded yet
-        if not self._icons_initialized:
-            self._icons_initialized = True
-            return
-
-        if palette is None:
+        """Manually recolor icons to match the new theme."""
+        # Use simple palette lookup - prefer global application palette for theme changes
+        app = QApplication.instance()
+        if app:
+            palette = app.palette()
+        elif palette is None:
             palette = self.qWin.palette()
 
-        # Get the target text color from the palette
+        # Get the target text color (foreground)
+        # Try WindowText first, then ButtonText as fallback
         text_color = palette.color(QPalette.ColorGroup.Active, QPalette.ColorRole.WindowText)
+        
+        # Debug safety check: if color seems invalid (alpha 0), fallback to white/black based on window color
+        if text_color.alpha() == 0:
+            window_color = palette.color(QPalette.ColorGroup.Active, QPalette.ColorRole.Window)
+            if window_color.value() < 128:
+                text_color = QColor(255, 255, 255) # Dark theme -> Light text
+            else:
+                text_color = QColor(0, 0, 0) # Light theme -> Dark text
 
         for button in self.pad.findChildren(QToolButton):
-            # Force the button to use the new palette
-            button.setPalette(palette)
-            button.setForegroundRole(QPalette.ColorRole.WindowText)
-
-            # Store original icon on first encounter (before any recoloring)
+            # Store original icon and iconSize on first encounter
             if not hasattr(button, '_original_icon') or button._original_icon is None:
                 button._original_icon = button.icon()
+                button._original_icon_size = button.iconSize()
+                
+                # If the button has no icon (e.g. text only), skip
+                if button._original_icon.isNull():
+                    continue
 
             # Recolor the ORIGINAL icon to match the new theme
             original_icon = button._original_icon
-            if original_icon and not original_icon.isNull():
-                recolored_icon = self._recolorIcon(original_icon, text_color)
-                button.setIcon(recolored_icon)
-
-            if button.style():
-                button.style().unpolish(button)
-                button.style().polish(button)
+            original_size = button._original_icon_size
             
+            # Use the original size for the pixmap
+            recolored_icon = self._recolorIcon(original_icon, text_color, original_size)
+            if recolored_icon:
+                button.setIcon(recolored_icon)
+                # Explicitly preserve the icon size
+                button.setIconSize(original_size)
+
             button.update()
 
-    def _recolorIcon(self, icon, color):
-        """Recolor an icon's pixmaps at all available sizes to the specified color."""
-        # Get all available sizes from the icon
-        sizes = icon.availableSizes()
+    def _recolorIcon(self, icon, color, size):
+        """Recolor an icon's pixmap to the specified color while preserving alpha."""
+        pixmap = icon.pixmap(size)
+        if pixmap.isNull():
+            return None
+
+        # Convert to ARGB32 to ensure we can manipulate pixels correctly
+        image = pixmap.toImage().convertToFormat(QImage.Format.Format_ARGB32)
         
-        # If no sizes reported, use common icon sizes
-        if not sizes:
-            from PyQt6.QtCore import QSize
-            sizes = [QSize(16, 16), QSize(22, 22), QSize(24, 24), QSize(32, 32), QSize(48, 48)]
-
-        new_icon = QIcon()
+        # Get the target color components
+        r, g, b = color.red(), color.green(), color.blue()
         
-        for size in sizes:
-            pixmap = icon.pixmap(size)
-            if pixmap.isNull():
-                continue
-
-            # Create a new pixmap with the target color
-            colored_pixmap = QPixmap(pixmap.size())
-            colored_pixmap.fill(Qt.GlobalColor.transparent)
-
-            painter = QPainter(colored_pixmap)
-            # Draw the original pixmap as a mask
-            painter.drawPixmap(0, 0, pixmap)
-            # Apply color using SourceIn composition (only affects non-transparent pixels)
-            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-            painter.fillRect(colored_pixmap.rect(), color)
-            painter.end()
-
-            new_icon.addPixmap(colored_pixmap)
-
-        return new_icon if not new_icon.isNull() else icon
+        # Iterate over all pixels and recolor while preserving alpha
+        for y in range(image.height()):
+            for x in range(image.width()):
+                pixel = image.pixelColor(x, y)
+                alpha = pixel.alpha()
+                if alpha > 0:  # Only modify non-transparent pixels
+                    # Create new color with target RGB and original Alpha
+                    new_color = QColor(r, g, b, alpha)
+                    image.setPixelColor(x, y, new_color)
+        
+        return QIcon(QPixmap.fromImage(image))
 
     def refreshBorrowedDocker(self):
         if not self.sourceDocker:
