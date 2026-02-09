@@ -25,6 +25,9 @@ class ntToggleVisibleButton(QToolButton):
         super(ntToggleVisibleButton, self).__init__(parent)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         self.setIconSize(QSize(11, 11))
+        self.updateStyleSheet()
+
+    def updateStyleSheet(self):
         self.setStyleSheet(variables.nu_toggle_button_style)
         
     def setArrow(self, alignment):

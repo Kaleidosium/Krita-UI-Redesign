@@ -16,7 +16,7 @@
 """
 
 from PyQt6.QtCore import QSignalBlocker
-from PyQt6.QtWidgets import QMdiArea, QDockWidget
+from PyQt6.QtWidgets import QMdiArea, QDockWidget, QToolButton
 from .ntadjusttosubwindowfilter import ntAdjustToSubwindowFilter
 from .ntwidgetpad import ntWidgetPad
 from .. import variables
@@ -25,6 +25,7 @@ class ntToolOptions():
 
     def __init__(self, window):
         qWin = window.qwindow()
+        self.qWin = qWin
         mdiArea = qWin.findChild(QMdiArea)
         toolOptions = qWin.findChild(QDockWidget, 'sharedtooldocker')
         self.sourceDocker = toolOptions
@@ -78,8 +79,34 @@ class ntToolOptions():
         return False
 
 
-    def updateStyleSheet(self):
+    def updateStyleSheet(self, palette=None):
+        if palette is not None:
+            palette_to_use = palette
+        elif self.sourceDocker:
+            palette_to_use = self.sourceDocker.palette()
+        else:
+            palette_to_use = self.qWin.palette()
+        variables.refreshThemeStyles(palette_to_use)
         self.pad.setStyleSheet(variables.nu_tool_options_style)
+        self.pad.btnHide.updateStyleSheet()
+        self._refreshToolButtonIcons()
+
+    def _refreshToolButtonIcons(self):
+        for button in self.pad.findChildren(QToolButton):
+            if button.style():
+                button.style().unpolish(button)
+                button.style().polish(button)
+            button.setIcon(button.icon())
+            button.update()
+
+    def refreshBorrowedDocker(self):
+        if not self.sourceDocker:
+            return
+
+        self.pad.returnDocker()
+        self.pad.borrowDocker(self.sourceDocker)
+        self._ensureDockerHidden()
+        self.pad.adjustToView()
     
     def close(self):
         try:

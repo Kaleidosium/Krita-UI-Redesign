@@ -19,7 +19,9 @@ from krita import *
 from .nuTools.nttoolbox import ntToolBox
 from .nuTools.nttooloptions import ntToolOptions
 from . import variables
-from PyQt6.QtWidgets import QMessageBox
+from PyQt6.QtCore import QEvent, QTimer
+from PyQt6.QtGui import QPalette
+from PyQt6.QtWidgets import QApplication, QMessageBox
     
 class Redesign(Extension):
 
@@ -33,6 +35,12 @@ class Redesign(Extension):
  
     def __init__(self, parent):
         super().__init__(parent)
+        self._theme_watcher_installed = False
+        self._is_refreshing_theme = False
+        self._theme_refresh_pending = False
+        self._pending_palette = None
+        self._palette_watch_timer = None
+        self._last_palette_signature = None
 
     def setup(self):
         if Application.readSetting("Redesign", "usesFlatTheme", "true") == "true":
@@ -51,6 +59,8 @@ class Redesign(Extension):
             self.usesNuToolOptions = True
 
     def createActions(self, window):
+        self._installThemeWatcher()
+        window.qwindow().installEventFilter(self)
         actions = []
 
         actions.append(window.createAction("toolbarBorder", "Borderless Toolbars", ""))
@@ -86,7 +96,7 @@ class Redesign(Extension):
         actions[3].toggled.connect(self.nuToolboxToggled)
         actions[4].toggled.connect(self.nuToolOptionsToggled)
 
-        variables.buildFlatTheme()
+        variables.refreshThemeStyles(self._paletteFromWindow(window.qwindow()))
 
         if (self.usesNuToolOptions and
             Application.readSetting("", "ToolOptionsInDocker", "false") == "true"):
@@ -99,6 +109,139 @@ class Redesign(Extension):
 
         #self.nuToolOptionsToggled(self.usesNuToolOptions)
         #self.nuToolOptionsToggled(self.usesNuToolOptions)
+
+    def _installThemeWatcher(self):
+        if self._theme_watcher_installed:
+            return
+
+        app = QApplication.instance()
+        if not app:
+            return
+
+        app.installEventFilter(self)
+        if hasattr(app, "paletteChanged"):
+            app.paletteChanged.connect(self._onApplicationPaletteChanged)
+        self._startPaletteWatchTimer(app)
+        self._last_palette_signature = self._paletteSignature(app.palette())
+        self._theme_watcher_installed = True
+
+    def eventFilter(self, obj, event):
+        if self._isThemeChangeEvent(obj, event):
+            self._scheduleThemeRefresh()
+
+        return False
+
+    def _scheduleThemeRefresh(self):
+        self._scheduleThemeRefreshWithPalette(None)
+
+    def _scheduleThemeRefreshWithPalette(self, palette=None):
+        if palette is not None:
+            self._pending_palette = QPalette(palette)
+
+        if self._theme_refresh_pending:
+            return
+
+        self._theme_refresh_pending = True
+        QTimer.singleShot(50, self._runScheduledThemeRefresh)
+
+    def _runScheduledThemeRefresh(self):
+        self._theme_refresh_pending = False
+        palette = self._pending_palette
+        self._pending_palette = None
+        self.refreshAllWindowStyles(palette)
+
+    def _startPaletteWatchTimer(self, app):
+        if self._palette_watch_timer:
+            return
+
+        self._palette_watch_timer = QTimer(app)
+        self._palette_watch_timer.setInterval(300)
+        self._palette_watch_timer.timeout.connect(self._pollPaletteChange)
+        self._palette_watch_timer.start()
+
+    def _pollPaletteChange(self):
+        palette = self._currentThemePalette()
+        signature = self._paletteSignature(palette)
+        if self._last_palette_signature != signature:
+            self._last_palette_signature = signature
+            self._scheduleThemeRefreshWithPalette(palette)
+
+    def _onApplicationPaletteChanged(self, palette):
+        resolved_palette = self._currentThemePalette()
+        self._last_palette_signature = self._paletteSignature(resolved_palette)
+        self._scheduleThemeRefreshWithPalette(resolved_palette)
+
+    def _currentThemePalette(self):
+        krita_active = Krita.instance().activeWindow()
+        if krita_active and krita_active.qwindow():
+            return self._paletteFromWindow(krita_active.qwindow())
+
+        app = QApplication.instance()
+        if app:
+            active = app.activeWindow()
+            if active:
+                return self._paletteFromWindow(active)
+            return app.palette()
+        return QPalette()
+
+    def _paletteFromWindow(self, qwindow):
+        if qwindow:
+            return qwindow.palette()
+
+        return self._currentThemePalette()
+
+    def _paletteSignature(self, palette):
+        return (
+            palette.color(QPalette.ColorGroup.Active, QPalette.ColorRole.Window).name(),
+            palette.color(QPalette.ColorGroup.Active, QPalette.ColorRole.AlternateBase).name(),
+            palette.color(QPalette.ColorGroup.Active, QPalette.ColorRole.Highlight).name(),
+            palette.color(QPalette.ColorGroup.Active, QPalette.ColorRole.WindowText).name(),
+            palette.color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText).name(),
+            palette.color(QPalette.ColorGroup.Active, QPalette.ColorRole.Text).name(),
+            palette.color(QPalette.ColorGroup.Active, QPalette.ColorRole.Button).name(),
+            palette.color(QPalette.ColorGroup.Active, QPalette.ColorRole.ButtonText).name(),
+        )
+
+    def _isThemeChangeEvent(self, obj, event):
+        app = QApplication.instance()
+        if not app:
+            return False
+
+        theme_event_types = (
+            QEvent.Type.ApplicationPaletteChange,
+            QEvent.Type.PaletteChange,
+        )
+        theme_change = getattr(QEvent.Type, "ThemeChange", None)
+        event_type = event.type()
+        if theme_change is not None:
+            theme_event_types = theme_event_types + (theme_change,)
+
+        if event_type not in theme_event_types:
+            return False
+
+        if obj is app:
+            return True
+
+        for window in Krita.instance().windows():
+            if obj is window.qwindow():
+                return True
+
+        return False
+
+    def refreshAllWindowStyles(self, palette=None):
+        if self._is_refreshing_theme:
+            return
+
+        self._is_refreshing_theme = True
+        try:
+            source_palette = palette if palette is not None else self._currentThemePalette()
+            self._last_palette_signature = self._paletteSignature(source_palette)
+            for window in Krita.instance().windows():
+                qwindow = window.qwindow()
+                if qwindow:
+                    self.rebuildStyleSheet(qwindow, qwindow.palette())
+        finally:
+            self._is_refreshing_theme = False
 
     def toolbarBorderToggled(self, toggled):
         Application.writeSetting("Redesign", "usesBorderlessToolbar", str(toggled).lower())
@@ -156,7 +299,10 @@ class Redesign(Extension):
             msg.exec()
 
 
-    def rebuildStyleSheet(self, window):
+    def rebuildStyleSheet(self, window, palette=None):
+        palette_to_use = palette if palette is not None else self._paletteFromWindow(window)
+        variables.refreshThemeStyles(palette_to_use)
+
         full_style_sheet = ""
         
         # Dockers
